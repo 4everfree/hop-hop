@@ -1,8 +1,18 @@
-# hop-hop
+
+## The story behind the name
+
+This project has a bit of a personal backstory. My family's pet rabbit, who lived with us for a long time, passed away yesterday. I wanted to build something useful to remember him by.
+
+I named the project "Hop-Hop" after the way rabbits hop around.
 
 A tray monitor for **running AI coding clients** — Claude Code, Antigravity (agy), Codex, Gemini and anything else you list in the config. It answers the question you get once you have a dozen terminals open: *how many clients am I actually running, and which console is which?*
 
 The tray icon carries the live count; the window lists every client with its working directory, terminal, uptime and resource use, and lets you jump straight to the window it lives in.
+
+
+Just a heads-up: I used AI to help write the code, so please don't judge too harshly! I did the best I could to bring the idea to life.
+
+Tested on Linux (KDE) and macOS.
 
 ## Layout
 
@@ -33,12 +43,6 @@ python python/hop-hop.py          # GUI
 Details, autostart and configuration: [`python/README.md`](python/README.md).
 
 ## Quick start (C++)
-
-```bash
-cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-cmake --build cpp/build -j
-./cpp/build/hop-hop --list
-```
 
 Needs Qt6 Widgets and a C++20 compiler. Details and the per-platform state: [`cpp/README.md`](cpp/README.md).
 
