@@ -149,8 +149,13 @@ bool activateWindow(const std::vector<qint64> &pids)
                 runningApplicationWithProcessIdentifier:static_cast<pid_t>(pid)];
             if (!app)
                 continue;   // this ancestor owns no GUI application
+            // NSRunningApplication has no -activate; the macOS 14 addition is
+            // -activateFromApplication:options:, which needs the app doing the
+            // asking. Older systems get the unqualified form.
             if (@available(macOS 14.0, *)) {
-                return [app activate];
+                return [app activateFromApplication:[NSRunningApplication
+                                                        currentApplication]
+                                            options:NSApplicationActivateAllWindows];
             } else {
                 return [app activateWithOptions:NSApplicationActivateAllWindows];
             }

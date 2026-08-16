@@ -7,12 +7,40 @@ The same tray monitor as [`../python/`](../python/README.md), built on Qt6 so on
 | Backend | State |
 |---|---|
 | **Linux** (`platform_linux.cpp`) | **Working and verified** — output matches the Python client process for process |
-| **macOS** (`platform_macos.mm`) | Written, **never compiled** — no macOS SDK was available |
+| **macOS** (`platform_macos.mm`) | **Working** — built and run on macOS 26.5 / arm64, Apple clang 17, Qt 6.11. Detection and `--activate` verified |
 | **Windows** (`platform_windows.cpp`) | Written, **never compiled** — no Windows SDK was available |
 
-The Linux backend exists so the shared core (config parsing, classification, ancestor filtering, Qt UI) could be exercised against a real system rather than shipped on faith. The macOS and Windows backends follow the API mapping below, but expect to fix small things — a missing header, a struct field spelled differently — on their first build. Nothing in the shared code is platform-specific, so those fixes should stay inside the one `platform_*` file.
+The Linux backend exists so the shared core (config parsing, classification, ancestor filtering, Qt UI) could be exercised against a real system rather than shipped on faith. The Windows backend follows the API mapping below, but expect to fix small things — a missing header, a struct field spelled differently — on its first build. Nothing in the shared code is platform-specific, so those fixes should stay inside the one `platform_*` file.
+
+The macOS backend's first build needed exactly one such fix, and it is worth knowing about because the compiler's diagnosis was misleading. `NSRunningApplication` has no `-activate` — that method belongs to `NSApplication`. The macOS 14 addition here is `-activateFromApplication:options:`. Clang reports this only as a *warning* ("may not respond to `activate`"), so silencing the accompanying type error compiles cleanly and then dies at runtime with `unrecognized selector sent to instance`. Treat "may not respond to" warnings in the platform layer as errors.
 
 ## Build
+
+Needs CMake ≥ 3.21, a C++20 compiler, and Qt6 Widgets (plus Qt6 DBus on Linux, which ships inside qtbase). `toml++` is used if installed; otherwise CMake downloads the pinned single header into the build tree, so **the first configure needs network access**.
+
+Install `qtbase`, not the full `qt` meta-package — the shared core only uses Widgets, and full Qt drags in QtWebEngine and ~37 other components for nothing.
+
+### macOS
+
+```bash
+brew install cmake qtbase
+```
+
+Homebrew symlinks `qtbase` into its prefix, which CMake already searches — no `CMAKE_PREFIX_PATH` needed. Xcode is not required either; the Command Line Tools SDK is enough for the Objective-C++ backend.
+
+### Linux (Debian / Ubuntu)
+
+```bash
+sudo apt install cmake g++ qt6-base-dev
+```
+
+### Linux (Fedora)
+
+```bash
+sudo dnf install cmake gcc-c++ qt6-qtbase-devel
+```
+
+### Build and run (macOS and Linux)
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -20,7 +48,26 @@ cmake --build build -j
 ./build/hop-hop --list
 ```
 
-Needs Qt6 Widgets (plus Qt6 DBus on Linux) and a C++20 compiler. `toml++` is used if installed; otherwise CMake downloads the pinned single header into the build tree, so the first configure needs network access.
+### Windows
+
+Install Qt 6 (MSVC build) via the [Qt online installer](https://www.qt.io/download-qt-installer) or vcpkg, then point CMake at it — adjust the path to your version and toolchain:
+
+```bat
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/msvc2022_64
+cmake --build build --config Release
+```
+
+### If configure fails to find Qt
+
+```
+Could not find a package configuration file provided by "Qt6"
+```
+
+means CMake cannot see Qt — usual when Qt came from the official installer rather than a package manager. Point at the directory that *contains* `lib/cmake/Qt6`:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
+```
 
 ## Run
 
