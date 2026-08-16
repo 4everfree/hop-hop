@@ -26,6 +26,7 @@ namespace {
 
 constexpr int kRefreshMs = 2000;   // polling interval
 constexpr int kWarnLevel = 6;      // above this the tray icon turns red
+constexpr int kMinDirWidth = 80;   // Directory never auto-shrinks below this
 
 enum Column { ColType, ColPid, ColDir, ColTty, ColUptime, ColCpu, ColRam, ColCmd };
 
@@ -137,7 +138,12 @@ MainWindow::MainWindow(std::vector<Target> targets, QWidget *parent)
     table_->setSortingEnabled(true);
     table_->setContextMenuPolicy(Qt::CustomContextMenu);
     table_->setToolTip(tr("Double-click — switch to the client's window"));
-    table_->horizontalHeader()->setSectionResizeMode(ColDir, QHeaderView::Stretch);
+    // every column stays user-resizable; the widths are measured once, on the
+    // first populated refresh (see sizeColumnsOnce), and Directory keeps
+    // absorbing the leftover space until the user drags it (fitDirectoryColumn)
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    table_->horizontalHeader()->setStretchLastSection(false);
+    table_->viewport()->installEventFilter(this);   // window resizes
 
     auto *body = new QVBoxLayout;
     body->addLayout(top);
@@ -159,6 +165,8 @@ MainWindow::MainWindow(std::vector<Target> targets, QWidget *parent)
     connect(table_, &QTableWidget::doubleClicked, this, &MainWindow::activateSelected);
     connect(table_, &QTableWidget::customContextMenuRequested,
             this, &MainWindow::showContextMenu);
+    connect(table_->horizontalHeader(), &QHeaderView::sectionResized,
+            this, &MainWindow::onSectionResized);
     connect(actShow, &QAction::triggered, this, &MainWindow::showAndRaise);
     connect(actQuit, &QAction::triggered, qApp, &QApplication::quit);
     connect(tray_, &QSystemTrayIcon::activated, this,
@@ -255,12 +263,10 @@ void MainWindow::updateTable()
     }
     table_->setSortingEnabled(true);   // re-sorts by the current indicator
 
-    // only fight the column widths when the row set actually changed;
-    // otherwise a widening CPU or RAM value shifts the whole table sideways
-    if (!sameClients) {
-        table_->resizeColumnsToContents();
-        table_->horizontalHeader()->setSectionResizeMode(ColDir, QHeaderView::Stretch);
-    }
+    // widths are the user's business after the first measurement: re-measuring
+    // here would both shift the table sideways and undo any manual dragging
+    if (!columnsSized_ && table_->rowCount() > 0)
+        sizeColumnsOnce();
 
     // sorting moved the rows around, so look the pids up again
     rowOfPid.clear();
@@ -287,6 +293,60 @@ void MainWindow::updateTable()
 
     table_->verticalScrollBar()->setValue(scrollV);
     table_->horizontalScrollBar()->setValue(scrollH);
+}
+
+// Measures the columns against the first batch of rows. Runs once — later
+// refreshes leave the widths alone, so manual dragging survives them.
+void MainWindow::sizeColumnsOnce()
+{
+    columnsSized_ = true;
+    adjustingColumns_ = true;
+    table_->resizeColumnsToContents();
+    adjustingColumns_ = false;
+    fitDirectoryColumn();
+}
+
+// Gives Directory whatever the other columns leave over, so the table keeps
+// filling the window. Stops for good once the user has dragged Directory
+// itself — from then on that width is theirs.
+void MainWindow::fitDirectoryColumn()
+{
+    if (dirPinned_ || !columnsSized_ || adjustingColumns_)
+        return;
+
+    int used = 0;
+    for (int column = 0; column < table_->columnCount(); ++column) {
+        if (column != ColDir && !table_->isColumnHidden(column))
+            used += table_->columnWidth(column);
+    }
+
+    const int target = qMax(kMinDirWidth, table_->viewport()->width() - used);
+    if (target == table_->columnWidth(ColDir))
+        return;
+
+    adjustingColumns_ = true;
+    table_->setColumnWidth(ColDir, target);
+    adjustingColumns_ = false;
+}
+
+// A drag on Directory pins it; a drag on any other column is absorbed by
+// Directory. Programmatic width changes come through here too, hence the guard.
+void MainWindow::onSectionResized(int column, int, int)
+{
+    if (adjustingColumns_)
+        return;
+    if (column == ColDir)
+        dirPinned_ = true;
+    else
+        fitDirectoryColumn();
+}
+
+// The table got wider or narrower with the window: re-fit Directory.
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == table_->viewport() && event->type() == QEvent::Resize)
+        fitDirectoryColumn();
+    return QMainWindow::eventFilter(watched, event);
 }
 
 // Writes one client into an existing row, creating cells only when missing.
@@ -430,6 +490,13 @@ void MainWindow::showAndRaise()
     showNormal();
     raise();
     activateWindow();
+#ifdef Q_OS_LINUX
+    // On Wayland a client cannot focus itself — the compositor drops the
+    // request and at best blinks the taskbar entry. Ask the compositor the
+    // same way we do for the clients' windows. Harmless elsewhere: without
+    // KWin the call just returns false.
+    platform::activateWindow({QCoreApplication::applicationPid()});
+#endif
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

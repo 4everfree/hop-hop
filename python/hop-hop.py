@@ -368,7 +368,9 @@ def print_list() -> None:
 
 def run_gui() -> None:
     try:
-        from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, Qt, QTimer
+        from PySide6.QtCore import (
+            QEvent, QItemSelectionModel, QPointF, QRectF, Qt, QTimer,
+        )
         from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
         from PySide6.QtWidgets import (
             QAbstractItemView, QApplication, QCheckBox, QHBoxLayout, QHeaderView,
@@ -379,6 +381,8 @@ def run_gui() -> None:
         sys.exit("PySide6 is missing:  sudo pacman -S pyside6")
 
     COLS = ["Type", "PID", "Directory", "TTY", "Uptime", "CPU %", "RAM", "Command"]
+    COL_DIR = 2
+    MIN_DIR_WIDTH = 80   # Directory never auto-shrinks below this
 
     # Rows carry their position in the collected list here. Ties break on it,
     # so rows comparing equal — every client of one type — keep a fixed order
@@ -466,9 +470,17 @@ def run_gui() -> None:
             self.table.customContextMenuRequested.connect(self.menu)
             self.table.doubleClicked.connect(lambda _idx: self.activate())
             self.table.setToolTip("Double-click — switch to the client's window")
+            # every column stays user-resizable; widths are measured once, on
+            # the first populated refresh (see size_columns_once), and Directory
+            # keeps absorbing the leftover space until the user drags it
             hh = self.table.horizontalHeader()
-            hh.setSectionResizeMode(2, QHeaderView.Stretch)
-            hh.setSectionResizeMode(7, QHeaderView.Interactive)
+            hh.setSectionResizeMode(QHeaderView.Interactive)
+            hh.setStretchLastSection(False)
+            hh.sectionResized.connect(self.on_section_resized)
+            self.table.viewport().installEventFilter(self)   # window resizes
+            self.columns_sized = False      # the one-off measurement has run
+            self.dir_pinned = False         # the user dragged Directory
+            self.adjusting_columns = False  # we are the ones changing widths
 
             body = QVBoxLayout()
             body.addLayout(top)
@@ -542,11 +554,11 @@ def run_gui() -> None:
                 self.fill_row(row_of_pid[c.pid] if same_clients else order, c, order)
             table.setSortingEnabled(True)
 
-            # only re-measure columns when the row set changed; otherwise a
-            # widening CPU or RAM value shifts the whole table sideways
-            if not same_clients:
-                table.resizeColumnsToContents()
-                table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+            # widths are the user's business after the first measurement:
+            # re-measuring here would both shift the table sideways and undo
+            # any manual dragging
+            if not self.columns_sized and table.rowCount() > 0:
+                self.size_columns_once()
 
             # sorting moved rows around, so look the pids up again
             row_of_pid = {table.item(r, 1).data(Qt.DisplayRole): r
@@ -565,6 +577,51 @@ def run_gui() -> None:
 
             table.verticalScrollBar().setValue(scroll_v)
             table.horizontalScrollBar().setValue(scroll_h)
+
+        def size_columns_once(self) -> None:
+            """Measure the columns against the first batch of rows. Runs once —
+            later refreshes leave the widths alone, so manual dragging
+            survives them."""
+            self.columns_sized = True
+            self.adjusting_columns = True
+            self.table.resizeColumnsToContents()
+            self.adjusting_columns = False
+            self.fit_dir_column()
+
+        def fit_dir_column(self) -> None:
+            """Give Directory whatever the other columns leave over, so the
+            table keeps filling the window. Stops for good once the user has
+            dragged Directory itself — from then on that width is theirs."""
+            if self.dir_pinned or not self.columns_sized or self.adjusting_columns:
+                return
+
+            table = self.table
+            used = sum(table.columnWidth(c) for c in range(table.columnCount())
+                       if c != COL_DIR and not table.isColumnHidden(c))
+            target = max(MIN_DIR_WIDTH, table.viewport().width() - used)
+            if target == table.columnWidth(COL_DIR):
+                return
+
+            self.adjusting_columns = True
+            table.setColumnWidth(COL_DIR, target)
+            self.adjusting_columns = False
+
+        def on_section_resized(self, column: int, _old: int, _new: int) -> None:
+            """A drag on Directory pins it; a drag on any other column is
+            absorbed by Directory. Programmatic changes land here too, hence
+            the guard."""
+            if self.adjusting_columns:
+                return
+            if column == COL_DIR:
+                self.dir_pinned = True
+            else:
+                self.fit_dir_column()
+
+        def eventFilter(self, watched, event) -> bool:
+            """The table got wider or narrower with the window: re-fit."""
+            if watched is self.table.viewport() and event.type() == QEvent.Resize:
+                self.fit_dir_column()
+            return super().eventFilter(watched, event)
 
         def fill_row(self, row: int, c: Client, order: int) -> None:
             """Write one client into an existing row, creating cells if absent."""
@@ -617,7 +674,6 @@ def run_gui() -> None:
             ram.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
             set_text(cell(7), c.cmd)
-            self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
 
         # ---- actions ----
         def current(self) -> Client | None:
@@ -670,6 +726,11 @@ def run_gui() -> None:
             self.showNormal()
             self.raise_()
             self.activateWindow()
+            # On Wayland a client cannot focus itself — the compositor drops
+            # the request and at best blinks the taskbar entry. Ask the
+            # compositor the same way we do for the clients' windows.
+            if sys.platform == "linux":
+                activate_window([os.getpid()])
 
         def closeEvent(self, event) -> None:   # window hides into the tray
             if self.tray.isVisible():
