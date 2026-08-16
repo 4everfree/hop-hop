@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E88A6B"/>
+      <stop offset="1" stop-color="#D97757"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+
+  <g fill="#FFFFFF">
+    <!-- ears -->
+    <ellipse cx="24" cy="21" rx="6" ry="14" transform="rotate(-12 24 21)"/>
+    <ellipse cx="40" cy="21" rx="6" ry="14" transform="rotate(12 40 21)"/>
+    <!-- head -->
+    <ellipse cx="32" cy="42" rx="17" ry="14"/>
+  </g>
+
+  <g fill="#F2A5A5">
+    <!-- inner ears -->
+    <ellipse cx="24" cy="21" rx="2.6" ry="9" transform="rotate(-12 24 21)"/>
+    <ellipse cx="40" cy="21" rx="2.6" ry="9" transform="rotate(12 40 21)"/>
+  </g>
+
+  <g fill="#3B2A24">
+    <!-- eyes -->
+    <circle cx="25" cy="40" r="2.4"/>
+    <circle cx="39" cy="40" r="2.4"/>
+  </g>
+
+  <!-- nose -->
+  <path d="M32 45.5 l3 2.6 h-6 z" fill="#E1798C"/>
+</svg>

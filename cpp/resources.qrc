@@ -1,0 +1,12 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <file alias="hop-hop-16.png">../assets/icons/hop-hop-16.png</file>
+        <file alias="hop-hop-24.png">../assets/icons/hop-hop-24.png</file>
+        <file alias="hop-hop-32.png">../assets/icons/hop-hop-32.png</file>
+        <file alias="hop-hop-48.png">../assets/icons/hop-hop-48.png</file>
+        <file alias="hop-hop-64.png">../assets/icons/hop-hop-64.png</file>
+        <file alias="hop-hop-128.png">../assets/icons/hop-hop-128.png</file>
+        <file alias="hop-hop-256.png">../assets/icons/hop-hop-256.png</file>
+    </qresource>
+</RCC>

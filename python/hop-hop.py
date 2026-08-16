@@ -368,7 +368,7 @@ def print_list() -> None:
 
 def run_gui() -> None:
     try:
-        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtCore import QItemSelectionModel, QPointF, QRectF, Qt, QTimer
         from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
         from PySide6.QtWidgets import (
             QAbstractItemView, QApplication, QCheckBox, QHBoxLayout, QHeaderView,
@@ -379,6 +379,29 @@ def run_gui() -> None:
         sys.exit("PySide6 is missing:  sudo pacman -S pyside6")
 
     COLS = ["Type", "PID", "Directory", "TTY", "Uptime", "CPU %", "RAM", "Command"]
+
+    # Rows carry their position in the collected list here. Ties break on it,
+    # so rows comparing equal — every client of one type — keep a fixed order
+    # instead of shuffling on each refresh.
+    ORDER_ROLE = Qt.UserRole + 1
+
+    class SortItem(QTableWidgetItem):
+        """Sorts on the raw value in UserRole, so '512 MB' and '1:03' order by
+        size and duration rather than alphabetically."""
+
+        def __lt__(self, other: QTableWidgetItem) -> bool:
+            mine, theirs = self.data(Qt.UserRole), other.data(Qt.UserRole)
+            if mine is not None and theirs is not None:
+                if mine != theirs:
+                    return mine < theirs
+            else:
+                a, b = self.data(Qt.DisplayRole), other.data(Qt.DisplayRole)
+                if isinstance(a, int) and isinstance(b, int):
+                    if a != b:
+                        return a < b
+                elif self.text() != other.text():
+                    return self.text().lower() < other.text().lower()
+            return (self.data(ORDER_ROLE) or 0) < (other.data(ORDER_ROLE) or 0)
 
     def make_icon(total: int) -> QIcon:
         size = 64
@@ -394,13 +417,25 @@ def run_gui() -> None:
             bg = QColor(next(iter(TARGETS.values()), {}).get("color", "#D97757"))
         p.setBrush(bg)
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(2, 2, size - 4, size - 4, 14, 14)
+
+        # rabbit ears above the badge — the count still has to read at 22 px,
+        # so they sit on top of the body rather than around it
+        for cx, angle in ((22, -10), (42, 10)):
+            p.save()
+            p.translate(cx, 15)
+            p.rotate(angle)
+            p.drawEllipse(QPointF(0, 0), 5.5, 12)
+            p.restore()
+
+        body = QRectF(3, 20, 58, 41)
+        p.drawRoundedRect(body, 12, 12)
+
         p.setPen(QColor("#FFFFFF"))
         f = QFont()
         f.setBold(True)
-        f.setPixelSize(44 if total < 10 else 34)
+        f.setPixelSize(32 if total < 10 else 24)
         p.setFont(f)
-        p.drawText(pm.rect(), Qt.AlignCenter, str(total))
+        p.drawText(body, Qt.AlignCenter, str(total))
         p.end()
         return QIcon(pm)
 
@@ -477,40 +512,111 @@ def run_gui() -> None:
             self.tray.setIcon(make_icon(total))
             self.tray.setToolTip("  ".join(f"{k}: {v}" for k, v in counts.items()))
 
-            col, order = (self.table.horizontalHeader().sortIndicatorSection(),
-                          self.table.horizontalHeader().sortIndicatorOrder())
-            selected = {self.table.item(i.row(), 1).text()
-                        for i in self.table.selectedIndexes() if self.table.item(i.row(), 1)}
+            self.update_table()
 
-            self.table.setSortingEnabled(False)
-            self.table.setRowCount(len(self.clients))
-            for row, c in enumerate(self.clients):
-                values = [c.kind, c.pid, c.cwd, c.tty or "—", fmt_uptime(c.uptime),
-                          round(c.cpu, 1), c.rss // 1048576, c.cmd]
-                for i, v in enumerate(values):
-                    item = QTableWidgetItem()
-                    if i in (1, 5, 6):
-                        item.setData(Qt.DisplayRole, v)
-                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                    elif i == 4:
-                        item.setData(Qt.DisplayRole, v)
-                        item.setData(Qt.UserRole, c.uptime)
-                    else:
-                        item.setText(str(v))
-                    if i == 0:
-                        item.setForeground(QColor(TARGETS[c.kind]["color"]))
-                        font = item.font()
-                        font.setBold(True)
-                        item.setFont(font)
-                    if i == 6:
-                        item.setText(f"{c.rss // 1048576} MB")
-                        item.setData(Qt.UserRole, c.rss)
-                    self.table.setItem(row, i, item)
-                if str(c.pid) in selected:
-                    self.table.selectRow(row)
-            self.table.setSortingEnabled(True)
-            self.table.sortItems(col, order)
-            self.table.resizeColumnsToContents()
+        # Cells are updated in place while the set of clients is unchanged.
+        # Tearing the table down every two seconds is what threw away the
+        # current cell and the scroll position — the view jumping under you.
+        def update_table(self) -> None:
+            table = self.table
+            scroll_v = table.verticalScrollBar().value()
+            scroll_h = table.horizontalScrollBar().value()
+            current_col = max(0, table.currentColumn())
+            current_pid = None
+            cur_item = table.item(table.currentRow(), 1)
+            if cur_item is not None:
+                current_pid = cur_item.data(Qt.DisplayRole)
+            selected = {table.item(i.row(), 1).data(Qt.DisplayRole)
+                        for i in table.selectionModel().selectedRows()
+                        if table.item(i.row(), 1)}
+
+            row_of_pid = {table.item(r, 1).data(Qt.DisplayRole): r
+                          for r in range(table.rowCount()) if table.item(r, 1)}
+            same_clients = (len(row_of_pid) == len(self.clients)
+                            and all(c.pid in row_of_pid for c in self.clients))
+
+            table.setSortingEnabled(False)
+            if not same_clients:
+                table.setRowCount(len(self.clients))
+            for order, c in enumerate(self.clients):
+                self.fill_row(row_of_pid[c.pid] if same_clients else order, c, order)
+            table.setSortingEnabled(True)
+
+            # only re-measure columns when the row set changed; otherwise a
+            # widening CPU or RAM value shifts the whole table sideways
+            if not same_clients:
+                table.resizeColumnsToContents()
+                table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+
+            # sorting moved rows around, so look the pids up again
+            row_of_pid = {table.item(r, 1).data(Qt.DisplayRole): r
+                          for r in range(table.rowCount()) if table.item(r, 1)}
+
+            if current_pid in row_of_pid:
+                table.setCurrentCell(row_of_pid[current_pid], current_col,
+                                     QItemSelectionModel.NoUpdate)
+            if selected:
+                model = table.selectionModel()
+                model.clearSelection()
+                for pid in selected:
+                    if pid in row_of_pid:
+                        model.select(table.model().index(row_of_pid[pid], 0),
+                                     QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+            table.verticalScrollBar().setValue(scroll_v)
+            table.horizontalScrollBar().setValue(scroll_h)
+
+        def fill_row(self, row: int, c: Client, order: int) -> None:
+            """Write one client into an existing row, creating cells if absent."""
+            table = self.table
+            if not 0 <= row < table.rowCount():
+                return
+
+            def cell(column: int) -> QTableWidgetItem:
+                item = table.item(row, column)
+                if item is None:
+                    item = SortItem()
+                    table.setItem(row, column, item)
+                item.setData(ORDER_ROLE, order)
+                return item
+
+            def set_text(item: QTableWidgetItem, text: str) -> None:
+                if item.text() != text:
+                    item.setText(text)
+
+            kind = cell(0)
+            set_text(kind, c.kind)
+            if not kind.font().bold():
+                font = kind.font()
+                font.setBold(True)
+                kind.setFont(font)
+            color = QColor(TARGETS.get(c.kind, {}).get("color", "#888888"))
+            if kind.foreground().color() != color:
+                kind.setForeground(color)
+
+            pid = cell(1)
+            if pid.data(Qt.DisplayRole) != c.pid:
+                pid.setData(Qt.DisplayRole, c.pid)
+                pid.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            set_text(cell(2), c.cwd)
+            set_text(cell(3), c.tty or "—")
+
+            uptime = cell(4)
+            set_text(uptime, fmt_uptime(c.uptime))
+            uptime.setData(Qt.UserRole, c.uptime)
+
+            cpu = cell(5)
+            set_text(cpu, f"{c.cpu:.1f}")
+            cpu.setData(Qt.UserRole, c.cpu)
+            cpu.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            ram = cell(6)
+            set_text(ram, f"{c.rss // 1048576} MB")
+            ram.setData(Qt.UserRole, float(c.rss))
+            ram.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            set_text(cell(7), c.cmd)
             self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
 
         # ---- actions ----
@@ -574,6 +680,17 @@ def run_gui() -> None:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    icons = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "assets", "icons")
+    app_icon = QIcon()
+    for px in (16, 24, 32, 48, 64, 128, 256):
+        path = os.path.join(icons, f"hop-hop-{px}.png")
+        if os.path.isfile(path):
+            app_icon.addFile(path)
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+
     win = Window()
     if "--tray" in sys.argv:
         win.hide()
