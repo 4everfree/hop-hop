@@ -1,10 +1,95 @@
+# Монитор запущенных клиентов Claude Code и Antigravity
+
+*Разговор от 16 августа 2026*
+
+---
+
+## Запрос
+
+> мне нужен gui инструмент который будет отслеживать сколько в системе запущено claude и agy (antigravity) клиентов — потому что у меня разрастается количество консолей с клиентами
+
+---
+
+## Ответ
+
+Один файл на PySide6 + psutil: иконка в трее с числом активных клиентов и окно со списком — тип, PID, рабочая директория, TTY, аптайм, CPU, RAM, полная команда. По правому клику: открыть директорию, скопировать PID/команду, SIGTERM/SIGKILL. Директория и TTY — как раз то, по чему опознаёшь, какая это из консолей.
+
+```bash
+sudo pacman -S python-psutil pyside6
+python claude-agy-monitor.py --list   # сначала проверить детект
+python claude-agy-monitor.py          # GUI
+python claude-agy-monitor.py --tray   # старт свёрнутым в трей
+```
+
+Начни с `--list`. Насчёт `claude` я уверен (ловится и по имени процесса, и по `cli.js` / `@anthropic-ai/claude-code` в командной строке), а вот как именно `agy` представляется в списке процессов — не знаю. Если он не появился, покажи вывод:
+
+```bash
+ps -eo pid,comm,args | grep -i -e agy -e antigravity
+```
+
+— и секция `TARGETS` в начале файла правится в две строки.
+
+Дочерние процессы найденных клиентов отфильтровываются, так что рендереры Electron у Antigravity и шеллы/ripgrep у Claude Code счёт не раздувают. Иконка краснеет при количестве больше 6 (`WARN_LEVEL`), период опроса — 2 секунды (`REFRESH_MS`).
+
+Для автозапуска проще всего кинуть `.desktop`-файл с `Exec=python /путь/claude-agy-monitor.py --tray` в `~/.config/autostart/`.
+
+---
+
+## Проверка детекта (тестовые командные строки)
+
+| Процесс | Командная строка | Результат |
+|---|---|---|
+| claude | `claude` | claude |
+| node | `node /home/u/.local/share/claude/cli.js --resume` | claude |
+| node | `/usr/bin/node .../@anthropic-ai/claude-code/cli.js` | claude |
+| agy | `agy chat` | agy |
+| antigravity | `/opt/antigravity/antigravity --type=renderer` | agy |
+| bash | `bash` | — |
+| python | `python /home/u/claude-agy-monitor.py` | — |
+| rg | `rg --files` | — |
+
+---
+
+## Запрос
+
+> я хочу по клику переключаться на окно с клиентом
+
+---
+
+## Ответ
+
+Двойной клик по строке (и пункт «Переключиться на окно» в контекстном меню) активирует окно клиента.
+
+Тонкость: окном владеет не сам процесс `claude`/`agy`, а его предок — эмулятор терминала (kitty/konsole/…), PyCharm или Chrome. Поэтому монитор строит цепочку `pid клиента → родители` и активирует окно, чей pid совпал с кем-то из цепочки. `systemd --user` и init из цепочки выкидываются — иначе под pid'ом `systemd --user` числится половина GUI-окон и совпадение было бы ложным. На практике клиенты внутри PyCharm прыгают на окно PyCharm, в терминале — на терминал, `claude --chrome-native-host` — на Chrome.
+
+Реализовано под **KDE Plasma (KWin)**: активация чужого окна на Wayland запрещена обычным приложениям, поэтому используется KWin-скриптинг через D-Bus (`gdbus` + `org.kde.KWin`) — короткий JS-скрипт находит окно по pid и делает `workspace.activeWindow = w`. На других оконных менеджерах активация тихо не сработает, остальной функционал не страдает. Единственная новая зависимость — `gdbus` (обычно уже есть в системе).
+
+---
+
+## Запрос
+
+> нужно чтобы в памяти всегда висел только один экземпляр — чтобы не путаться
+
+---
+
+## Ответ
+
+Один экземпляр держится через `flock` на файле `$XDG_RUNTIME_DIR/claude-agy-monitor.lock`. Лок привязан к процессу и снимается ядром даже при `kill -9`, поэтому зависших локов не остаётся. Повторный запуск (руками, из автозапуска или двойным кликом по `.desktop`) не плодит копию, а вытаскивает на передний план уже работающее окно — тем же KWin-механизмом, что и переключение на окно клиента — и завершается с сообщением. `--list` под лок не попадает: это разовая печать, её можно звать параллельно.
+
+---
+
+## Исходник: `claude-agy-monitor.py`
+
+```python
 #!/usr/bin/env python3
 """
-claude-agy-monitor — tray indicator + window listing the running
-Claude Code and Antigravity (agy) clients.
+hop-hop — tray indicator + window listing the running
+AI coding clients (Claude Code, Antigravity, Codex, Gemini, …).
 
-  python claude-agy-monitor.py           # GUI
-  python claude-agy-monitor.py --list    # print to terminal (check detection)
+  python hop-hop.py           # GUI
+  python hop-hop.py --list    # print to terminal (check detection)
+
+Which clients are tracked is defined in config/clients.toml.
 
 Dependencies (Arch/CachyOS):
   sudo pacman -S python-psutil pyside6
@@ -21,6 +106,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from dataclasses import dataclass
 
 try:
@@ -29,12 +115,20 @@ except ImportError:
     sys.exit("psutil is missing:  sudo pacman -S python-psutil")
 
 # --------------------------------------------------------------------------
-# Detection config. If something is not matched — tweak names/markers.
-# names   — compared against the process name and the basename of the first argv items
-# markers — substring in the full command line (lowercased)
+# Detection config. Clients are defined in an external TOML file so new ones
+# (codex, gemini, aider, …) can be added without touching the code. Search
+# order (first that exists wins, replacing the built-in defaults below):
+#   $XDG_CONFIG_HOME/hop-hop/clients.toml   — per-machine override
+#   clients.toml next to this script                   — local override
+#   ../config/clients.toml                             — shared with the C++ client
+# Each entry:
+#   names   — compared against the process name and the basename of the first argv items
+#   markers — substring in the full command line (case-insensitive)
+# Markers are always written with forward slashes; the command line is
+# normalized before matching so one config works on Linux/macOS/Windows.
 # --------------------------------------------------------------------------
 
-TARGETS = {
+DEFAULT_TARGETS = {
     "claude": {
         "color": "#D97757",
         "names": {"claude", "claude-code"},
@@ -46,6 +140,51 @@ TARGETS = {
         "markers": ("antigravity",),
     },
 }
+
+
+def _config_paths():
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    here = os.path.dirname(os.path.abspath(__file__))
+    yield os.path.join(xdg, "hop-hop", "clients.toml")
+    yield os.path.join(here, "clients.toml")                             # next to the script
+    yield os.path.join(os.path.dirname(here), "config", "clients.toml")  # shared with the C++ client
+
+
+def _coerce_target(cfg: dict) -> dict | None:
+    names = cfg.get("names", [])
+    markers = cfg.get("markers", [])
+    if not isinstance(names, list) or not isinstance(markers, list):
+        return None
+    color = cfg.get("color")
+    return {
+        "color": color if isinstance(color, str) else "#888888",
+        "names": {str(n).lower() for n in names},
+        "markers": tuple(str(m).lower() for m in markers),
+    }
+
+
+def load_targets() -> dict:
+    for path in _config_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            sys.stderr.write(f"[config] {path}: {e}\n")
+            continue
+        out = {}
+        for kind, cfg in data.items():
+            if isinstance(cfg, dict):
+                coerced = _coerce_target(cfg)
+                if coerced:
+                    out[kind] = coerced
+        if out:
+            return out
+    return DEFAULT_TARGETS
+
+
+TARGETS = load_targets()
 
 REFRESH_MS = 2000   # polling interval, ms
 WARN_LEVEL = 6      # more clients than this — the tray icon turns red
@@ -72,12 +211,23 @@ class Client:
 _cache: dict[int, psutil.Process] = {}
 
 
+def _basename(arg: str) -> str:
+    """Executable name from an argv entry: unix or Windows path, no .exe."""
+    base = arg.lower().replace("\\", "/").rsplit("/", 1)[-1]
+    for ext in (".exe", ".cmd", ".bat"):
+        if base.endswith(ext):
+            return base[: -len(ext)]
+    return base
+
+
 def _classify(name: str, cmdline: list[str]) -> str | None:
-    joined = " ".join(cmdline).lower()
+    # backslashes → forward slashes: markers are written unix-style, so the
+    # same config matches Windows command lines too
+    joined = " ".join(cmdline).lower().replace("\\", "/")
     if SELF_MARK in joined:          # don't count the monitor itself
         return None
-    bases = {os.path.basename(a).lower() for a in cmdline[:3]}
-    bases.add(name)
+    bases = {_basename(a) for a in cmdline[:3]}
+    bases.add(_basename(name))
     for kind, cfg in TARGETS.items():
         if bases & cfg["names"]:
             return kind
@@ -169,7 +319,7 @@ def fmt_uptime(sec: float) -> str:
 # match would be a false positive.
 # --------------------------------------------------------------------------
 
-_KWIN_PLUGIN = "claudeagymon_activate"
+_KWIN_PLUGIN = "hophop_activate"
 
 
 def ancestor_pids(pid: int) -> list[int]:
@@ -239,7 +389,7 @@ def activate_window(pids: list[int]) -> bool:
 
 _LOCK_PATH = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(),
-    "claude-agy-monitor.lock")
+    "hop-hop.lock")
 _lock_fd: int | None = None
 
 
@@ -324,7 +474,7 @@ def run_gui() -> None:
         elif total > WARN_LEVEL:
             bg = QColor("#C0392B")
         else:
-            bg = QColor(TARGETS["claude"]["color"])
+            bg = QColor(next(iter(TARGETS.values()), {}).get("color", "#D97757"))
         p.setBrush(bg)
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(2, 2, size - 4, size - 4, 14, 14)
@@ -340,7 +490,7 @@ def run_gui() -> None:
     class Window(QMainWindow):
         def __init__(self) -> None:
             super().__init__()
-            self.setWindowTitle("Claude / Antigravity — running clients")
+            self.setWindowTitle("hop-hop — running AI clients")
             self.resize(1000, 420)
 
             self.summary = QLabel()
@@ -519,6 +669,7 @@ if __name__ == "__main__":
     if "--list" in sys.argv:
         print_list()
     elif not single_instance_or_focus():
-        sys.exit("claude-agy-monitor is already running — raised its window.")
+        sys.exit("hop-hop is already running — raised its window.")
     else:
         run_gui()
+```

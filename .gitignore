@@ -1,45 +1,17 @@
-# Byte-compiled / optimized / DLL files
+# --- Python (python/) ---------------------------------------------------
+# Packaging patterns are scoped to python/ so they don't swallow C++ sources
+# (a plain `lib/` or `build/` would hide cpp/lib, cpp/build source trees).
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
+python/build/
+python/dist/
+python/sdist/
+python/wheels/
+python/*.egg-info/
+python/.eggs/
 *.egg
 MANIFEST
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
 
 # Environments
 .env
@@ -47,8 +19,16 @@ cover/
 env/
 venv/
 ENV/
-env.bak/
-venv.bak/
+
+# Tests / coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+.hypothesis/
 
 # Type checkers / linters
 .mypy_cache/
@@ -58,15 +38,33 @@ dmypy.json
 .pytype/
 .ruff_cache/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# --- C++ / CMake (cpp/) -------------------------------------------------
+cpp/build/
+cpp/out/
+cmake-build-*/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+.cache/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+vcpkg_installed/
 
-# IDEs / editors
+# --- IDEs / editors -----------------------------------------------------
 .idea/
 .vscode/
 *.swp
 *~
 
-# OS files
+# --- OS -----------------------------------------------------------------
 .DS_Store
 Thumbs.db

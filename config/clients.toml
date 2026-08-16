@@ -1,0 +1,61 @@
+# Client detection config for hop-hop.
+#
+# Shared by every implementation (python/, cpp/) — this is the single source
+# of truth for what counts as a client.
+#
+# Each [table] is one client "kind" (also the label shown in the UI).
+#   color   — hex color for the type in the list / tray
+#   names   — matched against the process name and the basename of the first
+#             argv items (case-insensitive, exact match)
+#   markers — substring matched anywhere in the full command line
+#             (case-insensitive)
+# A process matches if any of its `names` or any of its `markers` hit.
+#
+# PATH RULE: always write markers with forward slashes, even for Windows
+# paths. Implementations normalize backslashes to "/" before matching, so
+# ".claude/local/" matches C:\Users\me\.claude\local\ too. Keeping this rule
+# is what lets one config serve Linux, macOS and Windows.
+#
+# EXE RULE: write names without an extension. Implementations strip .exe /
+# .cmd / .bat before comparing, so "codex" also matches codex.exe.
+#
+# Search order (first file that exists wins and fully replaces this set):
+#   $XDG_CONFIG_HOME/hop-hop/clients.toml   — per-machine override
+#   clients.toml next to the implementation            — local override
+#   config/clients.toml                                — this file, shared
+#
+# After editing, verify with:  python python/hop-hop.py --list
+
+[claude]
+color = "#D97757"
+names = ["claude", "claude-code"]
+markers = ["@anthropic-ai/claude-code", "/claude/cli.js", ".claude/local/"]
+
+[agy]
+color = "#5A9BF6"
+names = ["agy", "antigravity"]
+markers = ["antigravity"]
+
+# OpenAI Codex CLI
+[codex]
+color = "#10A37F"
+names = ["codex"]
+markers = ["@openai/codex", "codex-cli"]
+
+# Google Gemini CLI
+[gemini]
+color = "#4285F4"
+names = ["gemini"]
+markers = ["@google/gemini-cli", "gemini-cli"]
+
+# Aider — uncomment to enable
+# [aider]
+# color = "#C77DFF"
+# names = ["aider"]
+# markers = ["aider-chat", "aider"]
+
+# Cursor Agent CLI — uncomment to enable
+# [cursor]
+# color = "#5B8DEF"
+# names = ["cursor-agent", "cursor"]
+# markers = ["cursor-agent"]
