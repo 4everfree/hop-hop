@@ -152,16 +152,41 @@ bool activateWindow(const std::vector<qint64> &pids, const QStringList &)
                 runningApplicationWithProcessIdentifier:static_cast<pid_t>(pid)];
             if (!app)
                 continue;   // this ancestor owns no GUI application
-            // NSRunningApplication has no -activate; the macOS 14 addition is
-            // -activateFromApplication:options:, which needs the app doing the
-            // asking. Older systems get the unqualified form.
+
+            // Primary path. NSRunningApplication has no -activate; that is an
+            // NSApplication method. The macOS 14 replacement is
+            // -activateFromApplication:options:. In GUI mode hop-hop is itself
+            // the active app when a row is double-clicked, so this succeeds and
+            // the Apple Event fallback below never runs.
+            BOOL ok;
             if (@available(macOS 14.0, *)) {
-                return [app activateFromApplication:[NSRunningApplication
-                                                        currentApplication]
-                                            options:NSApplicationActivateAllWindows];
+                ok = [app activateFromApplication:[NSRunningApplication
+                                                      currentApplication]
+                                          options:NSApplicationActivateAllWindows];
             } else {
-                return [app activateWithOptions:NSApplicationActivateAllWindows];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                ok = [app activateWithOptions:NSApplicationActivateAllWindows];
+#pragma clang diagnostic pop
             }
+            if (ok)
+                return true;
+
+            // Fallback for the standalone --activate CLI. macOS 14+ cooperative
+            // activation refuses a process that is not itself frontmost — the
+            // call above returns NO and nothing comes forward. An Apple Event
+            // asks the target to raise itself, which the system honors whatever
+            // our foreground state is. A GUI app always has a bundle id to
+            // address; if it somehow lacks one there is nothing to send to.
+            NSString *bundleId = app.bundleIdentifier;
+            if (bundleId.length == 0)
+                return false;
+            NSString *source = [NSString stringWithFormat:
+                @"tell application id \"%@\" to activate", bundleId];
+            NSDictionary *scriptError = nil;
+            [[[NSAppleScript alloc] initWithSource:source]
+                executeAndReturnError:&scriptError];
+            return scriptError == nil;
         }
     }
     return false;

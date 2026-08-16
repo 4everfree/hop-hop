@@ -7,12 +7,14 @@ The same tray monitor as [`../python/`](../python/README.md), built on Qt6 so on
 | Backend | State |
 |---|---|
 | **Linux** (`platform_linux.cpp`) | **Working and verified** — output matches the Python client process for process |
-| **macOS** (`platform_macos.mm`) | **Working** — built and run on macOS 26.5 / arm64, Apple clang 17, Qt 6.11. Detection and `--activate` verified |
+| **macOS** (`platform_macos.mm`) | **Working** — built and run on macOS 26.5 / arm64, Apple clang 17, Qt 6.11. Detection, `--list`, GUI activation, and the `--activate` CLI all verified |
 | **Windows** (`platform_windows.cpp`) | Written, **never compiled** — no Windows SDK was available |
 
 The Linux backend exists so the shared core (config parsing, classification, ancestor filtering, Qt UI) could be exercised against a real system rather than shipped on faith. The Windows backend follows the API mapping below, but expect to fix small things — a missing header, a struct field spelled differently — on its first build. Nothing in the shared code is platform-specific, so those fixes should stay inside the one `platform_*` file.
 
-The macOS backend's first build needed exactly one such fix, and it is worth knowing about because the compiler's diagnosis was misleading. `NSRunningApplication` has no `-activate` — that method belongs to `NSApplication`. The macOS 14 addition here is `-activateFromApplication:options:`. Clang reports this only as a *warning* ("may not respond to `activate`"), so silencing the accompanying type error compiles cleanly and then dies at runtime with `unrecognized selector sent to instance`. Treat "may not respond to" warnings in the platform layer as errors.
+The macOS backend's first build needed one fix, worth knowing because the compiler's diagnosis misleads. `NSRunningApplication` has no `-activate` — that method belongs to `NSApplication`. The macOS 14 call is `-activateFromApplication:options:`. Clang reports the wrong call only as a *warning* ("may not respond to `activate`"), so silencing the type error that comes with it compiles cleanly and then dies at runtime with `unrecognized selector sent to instance`. Treat "may not respond to" warnings in the platform layer as errors.
+
+Activation then has a macOS 14+ twist that only shows at runtime. Cooperative activation lets **only the currently active app** bring another one forward. Double-clicking a row in the GUI works because hop-hop is itself active at that moment. But the standalone `hop-hop --activate PID` runs in the background and the system denies it — it cannot even activate itself — so `-activateFromApplication:` returns `NO` and nothing moves. The backend falls back to an Apple Event (`tell application id "…" to activate`), which asks the target to raise itself regardless of who is calling. The first time it does this macOS may show a one-time "hop-hop wants to control …" Automation prompt; grant it for `--activate` to work from scripts. The GUI path succeeds on the first call and never reaches the fallback, so normal use never prompts.
 
 ## Build
 
@@ -107,7 +109,7 @@ src/main.cpp          argument handling
 | CPU / RSS | `proc_pidinfo(PROC_PIDTASKINFO)` | `GetProcessTimes`, `GetProcessMemoryInfo` |
 | start time | `kp_proc.p_starttime` | `GetProcessTimes` creation time |
 | TTY | `devname(e_tdev)` | none — see gaps |
-| activate window | `NSRunningApplication.activate` | `EnumWindows` → `SetForegroundWindow` |
+| activate window | `NSRunningApplication -activateFromApplication:`, Apple Event fallback | `EnumWindows` → `SetForegroundWindow` |
 | terminate / kill | `SIGTERM` / `SIGKILL` | `WM_CLOSE` / `TerminateProcess` |
 | single instance | `flock` | named mutex + pid file |
 
