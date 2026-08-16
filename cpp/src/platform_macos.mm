@@ -98,27 +98,38 @@ std::vector<ProcInfo> enumerateProcesses()
         ProcInfo info;
         info.pid = pid;
         info.cmdline = commandLineOf(pid);
-        if (info.cmdline.isEmpty())
-            continue;   // kernel task, or a process we may not inspect
 
-        char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-        if (proc_pidpath(pid, path, sizeof(path)) > 0) {
-            const QString full = QString::fromUtf8(path);
-            info.name = full.mid(full.lastIndexOf('/') + 1);
-        }
-
+        // ppid, start time, name and tty come from kinfo, which the kernel
+        // discloses even for processes whose argv we cannot read.
         struct kinfo_proc kp;
         if (kinfoFor(pid, kp)) {
             info.ppid = kp.kp_eproc.e_ppid;
             info.startTime = static_cast<double>(kp.kp_proc.p_starttime.tv_sec)
                            + kp.kp_proc.p_starttime.tv_usec / 1e6;
-            if (info.name.isEmpty())
-                info.name = QString::fromUtf8(kp.kp_proc.p_comm);
+            info.name = QString::fromUtf8(kp.kp_proc.p_comm);
             const dev_t tdev = kp.kp_eproc.e_tdev;
             if (tdev != NODEV) {
                 if (const char *name = devname(tdev, S_IFCHR))
                     info.tty = QString::fromUtf8(name);
             }
+        }
+
+        // A process whose argv we cannot read is kept with just pid/ppid/name,
+        // not dropped — the ancestor walk has to climb through it. Terminal.app
+        // starts a login shell through a setuid-root `login` whose command line
+        // the user cannot fetch; drop it and the walk stops there, never
+        // reaching the terminal window that owns the client. classify() returns
+        // early on an empty command line, so these never become clients.
+        if (info.cmdline.isEmpty()) {
+            out.push_back(std::move(info));
+            continue;
+        }
+
+        // The full exec path beats p_comm, which the kernel truncates.
+        char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+        if (proc_pidpath(pid, path, sizeof(path)) > 0) {
+            const QString full = QString::fromUtf8(path);
+            info.name = full.mid(full.lastIndexOf('/') + 1);
         }
 
         struct proc_taskinfo task;
