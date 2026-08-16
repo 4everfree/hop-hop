@@ -141,7 +141,10 @@ std::vector<ProcInfo> enumerateProcesses()
     return out;
 }
 
-bool activateWindow(const std::vector<qint64> &pids)
+// captionHints are unused here: NSRunningApplication activates an application
+// with all its windows, and picking one of them would need the accessibility
+// API and the permission prompt that comes with it.
+bool activateWindow(const std::vector<qint64> &pids, const QStringList &)
 {
     @autoreleasepool {
         for (qint64 pid : pids) {

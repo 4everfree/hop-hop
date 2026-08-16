@@ -129,7 +129,10 @@ QStringList splitCommandLine(const QString &line)
 
 struct WindowSearch {
     const std::vector<qint64> *pids;
-    HWND found;
+    const QStringList *hints;
+    HWND first;      // first window of a matching process
+    HWND best;       // the one whose title matched a hint
+    int bestRank;    // index into hints; lower is a better match
 };
 
 BOOL CALLBACK findWindowForPid(HWND hwnd, LPARAM param)
@@ -140,13 +143,33 @@ BOOL CALLBACK findWindowForPid(HWND hwnd, LPARAM param)
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
+    bool ours = false;
     for (qint64 candidate : *search->pids) {
         if (static_cast<qint64>(pid) == candidate) {
-            search->found = hwnd;
-            return FALSE;
+            ours = true;
+            break;
         }
     }
-    return TRUE;
+    if (!ours)
+        return TRUE;
+
+    if (!search->first)
+        search->first = hwnd;
+    if (search->hints->isEmpty())
+        return FALSE;   // nothing to distinguish windows by — take the first
+
+    constexpr int kCaptionMax = 512;
+    wchar_t buffer[kCaptionMax] = {0};
+    GetWindowTextW(hwnd, buffer, kCaptionMax);
+    const QString caption = QString::fromWCharArray(buffer).toLower();
+    for (int rank = 0; rank < search->hints->size() && rank < search->bestRank; ++rank) {
+        if (caption.contains(search->hints->at(rank))) {
+            search->best = hwnd;
+            search->bestRank = rank;
+            break;
+        }
+    }
+    return search->bestRank == 0 ? FALSE : TRUE;   // can't do better than the first hint
 }
 
 struct CloseRequest {
@@ -222,27 +245,29 @@ std::vector<ProcInfo> enumerateProcesses()
     return out;
 }
 
-bool activateWindow(const std::vector<qint64> &pids)
+bool activateWindow(const std::vector<qint64> &pids, const QStringList &captionHints)
 {
     if (pids.empty())
         return false;
 
-    WindowSearch search{&pids, nullptr};
+    WindowSearch search{&pids, &captionHints, nullptr, nullptr,
+                        captionHints.size()};
     EnumWindows(findWindowForPid, reinterpret_cast<LPARAM>(&search));
-    if (!search.found)
+    HWND target = search.best ? search.best : search.first;
+    if (!target)
         return false;
 
-    if (IsIconic(search.found))
-        ShowWindow(search.found, SW_RESTORE);
+    if (IsIconic(target))
+        ShowWindow(target, SW_RESTORE);
 
-    if (SetForegroundWindow(search.found))
+    if (SetForegroundWindow(target))
         return true;
 
     // Windows refuses focus theft unless we are already the foreground app;
     // flashing the taskbar button is the sanctioned consolation prize.
     FLASHWINFO flash = {};
     flash.cbSize = sizeof(flash);
-    flash.hwnd = search.found;
+    flash.hwnd = target;
     flash.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
     flash.uCount = 3;
     FlashWindowEx(&flash);

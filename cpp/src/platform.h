@@ -14,8 +14,14 @@ namespace platform {
 std::vector<ProcInfo> enumerateProcesses();
 
 // Raise the window belonging to any of `pids` (client pid first, then its
-// ancestors). Returns false when no window matched or the request failed.
-bool activateWindow(const std::vector<qint64> &pids);
+// ancestors). `captionHints` disambiguates between several windows of one
+// process — an IDE with two projects open is one process with one pid, so the
+// pid alone would always land on whichever window came first. Hints are
+// lowercase substrings tried against the window title, best first; a window
+// matching none of them is still used when nothing better turns up.
+// Returns false when no window matched or the request failed.
+bool activateWindow(const std::vector<qint64> &pids,
+                    const QStringList &captionHints = {});
 
 // Ask a process to quit; force = kill without cleanup.
 // Returns an empty string on success, an error message otherwise.

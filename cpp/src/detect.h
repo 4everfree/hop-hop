@@ -24,6 +24,13 @@ QString classify(const QString &name, const QStringList &cmdline,
 // desktop hangs off `systemd --user`, so matching it produces false hits.
 std::vector<qint64> ancestorPids(qint64 pid, const QHash<qint64, ProcInfo> &byPid);
 
+// Lowercase window-title hints for a client's working directory, deepest
+// component first: /home/me/Projects/hop-hop/cpp -> {"cpp", "hop-hop"}. IDEs
+// and terminals put the project or directory name in the title, which is the
+// only way to tell two windows of one process apart. Stops at $HOME so the
+// hints never degrade into "home" or the user name.
+QStringList captionHints(const QString &cwd);
+
 // Holds the previous CPU sample, so cpu% is measured over the refresh
 // interval instead of the process lifetime.
 class Detector {

@@ -5,15 +5,21 @@
 
 #include <QDBusConnection>
 #include <QDBusInterface>
+#include <QDBusMessage>
 #include <QDBusReply>
+#include <QDBusVirtualObject>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTextStream>
+#include <QTimer>
 
 #include <csignal>
+#include <functional>
 #include <unistd.h>
 
 namespace platform {
@@ -96,6 +102,34 @@ bool readStat(const QString &procDir, ProcInfo &info)
     return true;
 }
 
+// loadScript/run only say that the script started, not whether it found a
+// window — the search happens inside the compositor. So the script calls back
+// here over the bus and this object catches the verdict. A virtual object
+// keeps it moc-free: there are no signals or slots to export.
+class ActivationReport : public QDBusVirtualObject {
+public:
+    QString introspect(const QString &) const override { return {}; }
+
+    bool handleMessage(const QDBusMessage &message, const QDBusConnection &) override
+    {
+        if (message.member() != QLatin1String("report"))
+            return false;
+        activated = message.arguments().value(0).toBool();
+        received = true;
+        if (onReport)
+            onReport();
+        return true;
+    }
+
+    bool activated = false;
+    bool received = false;
+    std::function<void()> onReport;
+};
+
+constexpr const char *kReportPath = "/hophop/activation";
+constexpr const char *kReportInterface = "org.hophop.Activation";
+constexpr int kReportTimeoutMs = 700;
+
 } // namespace
 
 std::vector<ProcInfo> enumerateProcesses()
@@ -134,7 +168,7 @@ std::vector<ProcInfo> enumerateProcesses()
     return out;
 }
 
-bool activateWindow(const std::vector<qint64> &pids)
+bool activateWindow(const std::vector<qint64> &pids, const QStringList &captionHints)
 {
     if (pids.empty())
         return false;
@@ -143,20 +177,52 @@ bool activateWindow(const std::vector<qint64> &pids)
     for (qint64 pid : pids)
         list << QString::number(pid);
 
-    // Runs inside the compositor: find a window whose pid is in the chain,
-    // un-minimize it and make it active.
+    QStringList quotedHints;
+    for (const QString &hint : captionHints) {
+        QString escaped = hint;
+        escaped.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
+        escaped.replace(QLatin1Char('"'), QLatin1String("\\\""));
+        quotedHints << QLatin1Char('"') + escaped + QLatin1Char('"');
+    }
+
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    ActivationReport report;
+    const QString sink = bus.baseService();
+    const bool listening = !sink.isEmpty()
+        && bus.registerVirtualObject(QLatin1String(kReportPath), &report);
+    const auto unregister = qScopeGuard([&] {
+        if (listening)
+            bus.unregisterObject(QLatin1String(kReportPath));
+    });
+
+    // Runs inside the compositor: collect the windows whose pid is in the
+    // chain, prefer the one whose title matches the best hint — an IDE with
+    // two projects open is a single pid with two windows — then un-minimize
+    // it, make it active and tell us whether anything matched at all.
     const QString js = QStringLiteral(
-        "var t=[%1];"
+        "var t=[%1];var h=[%2];"
         "var ws=(typeof workspace.windowList==='function')"
         "?workspace.windowList():workspace.clientList();"
-        "for(var i=0;i<ws.length;i++){if(t.indexOf(ws[i].pid)!==-1){"
-        "if(ws[i].minimized)ws[i].minimized=false;"
-        "workspace.activeWindow=ws[i];break;}}").arg(list.join(QLatin1Char(',')));
+        "var m=[];"
+        "for(var i=0;i<ws.length;i++){if(t.indexOf(ws[i].pid)!==-1)m.push(ws[i]);}"
+        "var win=null;"
+        "for(var k=0;k<h.length&&!win;k++){"
+        "for(var j=0;j<m.length;j++){"
+        "if(String(m[j].caption).toLowerCase().indexOf(h[k])!==-1){win=m[j];break;}}}"
+        "if(!win&&m.length)win=m[0];"
+        "if(win){if(win.minimized)win.minimized=false;"
+        "workspace.activeWindow=win;}"
+        "if('%3'.length)callDBus('%3','%4','%5','report',win!==null);")
+        .arg(list.join(QLatin1Char(',')), quotedHints.join(QLatin1Char(',')),
+             listening ? sink : QString(),
+             QLatin1String(kReportPath), QLatin1String(kReportInterface));
 
     QTemporaryFile script(QDir::tempPath() + QStringLiteral("/hop-hop-XXXXXX.js"));
     script.setAutoRemove(true);
-    if (!script.open())
+    if (!script.open()) {
+        qWarning("hop-hop: activateWindow — cannot write the KWin script");
         return false;
+    }
     script.write(js.toUtf8());
     script.flush();
 
@@ -165,22 +231,52 @@ bool activateWindow(const std::vector<qint64> &pids)
                              QStringLiteral("/Scripting"),
                              QStringLiteral("org.kde.kwin.Scripting"),
                              QDBusConnection::sessionBus());
-    if (!scripting.isValid())
+    if (!scripting.isValid()) {
+        qWarning("hop-hop: activateWindow — no KWin scripting on the bus: %s",
+                 qUtf8Printable(scripting.lastError().message()));
         return false;   // not KWin — nothing we can do from a Wayland client
+    }
 
     scripting.call(QStringLiteral("unloadScript"), plugin);
     const QDBusReply<int> id =
         scripting.call(QStringLiteral("loadScript"), script.fileName(), plugin);
-    if (!id.isValid())
+    if (!id.isValid()) {
+        qWarning("hop-hop: activateWindow — loadScript failed: %s",
+                 qUtf8Printable(id.error().message()));
         return false;
+    }
 
     QDBusInterface loaded(QStringLiteral("org.kde.KWin"),
                           QStringLiteral("/Scripting/Script%1").arg(id.value()),
                           QStringLiteral("org.kde.kwin.Script"),
                           QDBusConnection::sessionBus());
-    loaded.call(QStringLiteral("run"));
+    const QDBusMessage ran = loaded.call(QStringLiteral("run"));
+    if (ran.type() == QDBusMessage::ErrorMessage) {
+        qWarning("hop-hop: activateWindow — run failed: %s",
+                 qUtf8Printable(ran.errorMessage()));
+        scripting.call(QStringLiteral("unloadScript"), plugin);
+        return false;
+    }
     scripting.call(QStringLiteral("unloadScript"), plugin);
-    return true;
+
+    if (!listening)
+        return true;   // nowhere to report back to; assume the script did its job
+
+    // callDBus is queued inside the compositor, so the verdict usually lands
+    // just after run() returns.
+    if (!report.received) {
+        QEventLoop loop;
+        report.onReport = [&loop] { loop.quit(); };
+        QTimer::singleShot(kReportTimeoutMs, &loop, &QEventLoop::quit);
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
+        report.onReport = nullptr;
+    }
+    if (!report.received) {
+        qWarning("hop-hop: activateWindow — no verdict from KWin within %d ms",
+                 kReportTimeoutMs);
+        return true;   // it may well have worked; don't claim otherwise
+    }
+    return report.activated;
 }
 
 QString terminateProcess(qint64 pid, bool force)

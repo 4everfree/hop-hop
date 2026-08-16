@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QSet>
 
 #include <algorithm>
@@ -82,6 +83,29 @@ std::vector<qint64> ancestorPids(qint64 pid, const QHash<qint64, ProcInfo> &byPi
         current = parent;
     }
     return out;
+}
+
+QStringList captionHints(const QString &cwd)
+{
+    QStringList hints;
+    if (cwd.isEmpty())
+        return hints;
+
+    const QString home = QDir::homePath();
+    QDir dir(QDir::cleanPath(cwd));
+    // three levels are enough to reach the project root from a client started
+    // in, say, cpp/src, and few enough that the last hint stays specific
+    for (int level = 0; level < 3; ++level) {
+        const QString path = dir.absolutePath();
+        if (path == home || dir.isRoot())
+            break;
+        const QString name = dir.dirName().toLower();
+        if (!name.isEmpty() && !hints.contains(name))
+            hints << name;
+        if (!dir.cdUp())
+            break;
+    }
+    return hints;
 }
 
 std::vector<Client> Detector::collect(bool onlyWithTty)

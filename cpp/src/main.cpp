@@ -93,7 +93,9 @@ int main(int argc, char *argv[])
         QHash<qint64, ProcInfo> byPid;
         for (const ProcInfo &p : platform::enumerateProcesses())
             byPid.insert(p.pid, p);
-        const bool ok = platform::activateWindow(detect::ancestorPids(pid, byPid));
+        const bool ok = platform::activateWindow(
+            detect::ancestorPids(pid, byPid),
+            detect::captionHints(byPid.value(pid).cwd));
         QTextStream(stdout) << (ok ? "activated\n" : "no window found\n");
         return ok ? 0 : 1;
     }

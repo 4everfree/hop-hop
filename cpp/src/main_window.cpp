@@ -432,8 +432,11 @@ void MainWindow::activateSelected()
     const Client *c = currentClient();
     if (!c)
         return;
-    // the window belongs to an ancestor — a terminal, an IDE, a browser
-    platform::activateWindow(detect::ancestorPids(c->pid, detector_.lastSnapshot()));
+    // The window belongs to an ancestor — a terminal, an IDE, a browser — and
+    // that ancestor may own several windows (one IDE process, two projects),
+    // so the client's directory decides which of them we mean.
+    platform::activateWindow(detect::ancestorPids(c->pid, detector_.lastSnapshot()),
+                             detect::captionHints(c->cwd));
 }
 
 void MainWindow::showContextMenu(const QPoint &pos)
@@ -487,7 +490,8 @@ void MainWindow::showContextMenu(const QPoint &pos)
 
 void MainWindow::showAndRaise()
 {
-    showNormal();
+    show();
+    setWindowState((windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
     raise();
     activateWindow();
 #ifdef Q_OS_LINUX
@@ -495,7 +499,13 @@ void MainWindow::showAndRaise()
     // request and at best blinks the taskbar entry. Ask the compositor the
     // same way we do for the clients' windows. Harmless elsewhere: without
     // KWin the call just returns false.
-    platform::activateWindow({QCoreApplication::applicationPid()});
+    //
+    // Deferred: coming back from the tray the surface does not exist yet at
+    // this point, so the compositor would find no window to activate. One
+    // immediate try for the already-mapped case, one after the round trip.
+    const qint64 self = QCoreApplication::applicationPid();
+    platform::activateWindow({self});
+    QTimer::singleShot(150, this, [self] { platform::activateWindow({self}); });
 #endif
 }
 

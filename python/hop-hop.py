@@ -256,16 +256,50 @@ def ancestor_pids(pid: int) -> list[int]:
     return out
 
 
-def activate_window(pids: list[int]) -> bool:
-    """Activate the window whose pid is in pids. True — request sent."""
+def caption_hints(cwd: str) -> list[str]:
+    """Lowercase window-title hints for a client's working directory, deepest
+    component first: /home/me/Projects/hop-hop/cpp -> ["cpp", "hop-hop"]. IDEs
+    and terminals put the project or directory name in the title, which is the
+    only way to tell two windows of one process apart. Stops at $HOME so the
+    hints never degrade into "home" or the user name."""
+    if not cwd:
+        return []
+    home = os.path.expanduser("~")
+    hints: list[str] = []
+    path = os.path.normpath(cwd)
+    # three levels are enough to reach the project root from a client started
+    # in, say, cpp/src, and few enough that the last hint stays specific
+    for _ in range(3):
+        if path in (home, os.sep) or not path:
+            break
+        name = os.path.basename(path).lower()
+        if name and name not in hints:
+            hints.append(name)
+        path = os.path.dirname(path)
+    return hints
+
+
+def activate_window(pids: list[int], hints: list[str] | None = None) -> bool:
+    """Activate the window whose pid is in pids. `hints` picks between several
+    windows of one process — an IDE with two projects open is one pid with two
+    windows. True — request sent."""
     targets = "[" + ",".join(str(p) for p in pids) + "]"
+    quoted = "[" + ",".join(
+        '"' + h.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        for h in (hints or [])) + "]"
     js = (
-        f"var t={targets};"
+        f"var t={targets};var h={quoted};"
         "var ws=(typeof workspace.windowList==='function')"
         "?workspace.windowList():workspace.clientList();"
-        "for(var i=0;i<ws.length;i++){if(t.indexOf(ws[i].pid)!==-1){"
-        "if(ws[i].minimized)ws[i].minimized=false;"
-        "workspace.activeWindow=ws[i];break;}}"
+        "var m=[];"
+        "for(var i=0;i<ws.length;i++){if(t.indexOf(ws[i].pid)!==-1)m.push(ws[i]);}"
+        "var win=null;"
+        "for(var k=0;k<h.length&&!win;k++){"
+        "for(var j=0;j<m.length;j++){"
+        "if(String(m[j].caption).toLowerCase().indexOf(h[k])!==-1){win=m[j];break;}}}"
+        "if(!win&&m.length)win=m[0];"
+        "if(win){if(win.minimized)win.minimized=false;"
+        "workspace.activeWindow=win;}"
     )
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
@@ -686,7 +720,10 @@ def run_gui() -> None:
         def activate(self) -> None:
             c = self.current()
             if c:
-                activate_window(ancestor_pids(c.pid))
+                # the window belongs to an ancestor — a terminal, an IDE, a
+                # browser — which may own several windows, so the client's
+                # directory decides which of them we mean
+                activate_window(ancestor_pids(c.pid), caption_hints(c.cwd))
 
         def menu(self, pos) -> None:
             c = self.current()

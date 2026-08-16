@@ -78,7 +78,7 @@ hop-hop --list          print detected clients, and which config was used
 hop-hop --activate PID  raise the window owning that client, then exit
 ```
 
-`--activate` is also how you test the platform layer in isolation — it exercises the whole ancestor-walk plus activation path without the GUI.
+`--activate` is also how you test the platform layer in isolation — it exercises the whole ancestor-walk plus activation path without the GUI. It prints `activated` and exits 0 only when a window really matched; when nothing did, it says `no window found` and exits 1. On KWin the search runs inside the compositor, so the script reports its verdict back over D-Bus.
 
 ## Layout
 
